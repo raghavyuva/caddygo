@@ -8,14 +8,14 @@ A simple Go library for managing Caddy server configurations through its admin A
 
 ## ✨ Features
 
-- ** Domain Management**: Add and remove domains with ease
-- ** Automatic TLS**: Support for Let's Encrypt and other ACME providers  
-- ** Custom Certificates**: Use your own TLS certificates
-- ** Security Headers**: Configurable security headers (HSTS, X-Frame-Options, etc.)
-- ** Compression**: Enable gzip and zstd compression
-- ** Redirects**: Support for www/non-www redirects
-- ** Configuration Reload**: Force Caddy to reload configurations
-- ** Clean Architecture**: Well-organized, maintainable codebase
+- **Domain Management**: Add and remove domains with ease
+- **Automatic TLS**: Support for Let's Encrypt and other ACME providers  
+- **Custom Certificates**: Use your own TLS certificates
+- **Security Headers**: Configurable security headers (HSTS, X-Frame-Options, etc.)
+- **Compression**: Enable gzip and zstd compression
+- **Redirects**: Support for www/non-www redirects
+- **Configuration Reload**: Force Caddy to reload configurations
+- **Clean Architecture**: Well-organized, maintainable codebase
 
 ## 📦 Installation
 
