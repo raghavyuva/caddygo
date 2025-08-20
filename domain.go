@@ -354,6 +354,180 @@ func (c *Client) AddDomainWithTLS(domain, target string, targetPort int, certifi
 	return nil
 }
 
+// AddDomainWithACME adds a domain with explicit ACME policy configuration.
+// This approach uses non-on-demand ACME policies for more controlled certificate management.
+//
+// Parameters:
+//   - domain: The domain name to configure (e.g., "example.com")
+//   - target: The target hostname or IP address
+//   - targetPort: The target port number
+//   - options: Configuration options for security headers, compression, and redirects
+//
+// Returns an error if the configuration fails.
+func (c *Client) AddDomainWithACME(domain, target string, targetPort int, options DomainOptions) error {
+	// Get current config
+	resp, err := c.makeRequest("GET", "/config/", nil)
+	if err != nil {
+		return fmt.Errorf("failed to get current config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var config caddy.Config
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return fmt.Errorf("failed to decode config: %w", err)
+	}
+
+	// Initialize HTTP app if not present
+	if config.AppsRaw == nil {
+		config.AppsRaw = make(map[string]json.RawMessage)
+	}
+
+	var httpApp caddyhttp.App
+	if httpAppRaw, exists := config.AppsRaw["http"]; exists {
+		if err := json.Unmarshal(httpAppRaw, &httpApp); err != nil {
+			return fmt.Errorf("failed to unmarshal HTTP app: %w", err)
+		}
+	}
+
+	if httpApp.Servers == nil {
+		httpApp.Servers = make(map[string]*caddyhttp.Server)
+	}
+
+	if httpApp.Servers["srv0"] == nil {
+		httpApp.Servers["srv0"] = &caddyhttp.Server{}
+	}
+
+	server := httpApp.Servers["srv0"]
+
+	// Create route handlers
+	var handlers []json.RawMessage
+
+	// Add security headers if enabled
+	if options.EnableSecurityHeaders {
+		headersHandler := headers.Handler{
+			Response: &headers.RespHeaderOps{
+				HeaderOps: &headers.HeaderOps{
+					Set: c.getSecurityHeaders(options.EnableHSTS, options.FrameOptions),
+				},
+			},
+		}
+		handlerRaw := caddyconfig.JSONModuleObject(headersHandler, "handler", "headers", nil)
+		handlers = append(handlers, handlerRaw)
+	}
+
+	// Add compression if enabled
+	if options.EnableCompression {
+		encodeHandler := encode.Encode{
+			EncodingsRaw: map[string]json.RawMessage{
+				"gzip": json.RawMessage(`{}`),
+				"zstd": json.RawMessage(`{}`),
+			},
+		}
+		handlerRaw := caddyconfig.JSONModuleObject(encodeHandler, "handler", "encode", nil)
+		handlers = append(handlers, handlerRaw)
+	}
+
+	// Add reverse proxy handler
+	upstream := reverseproxy.Upstream{
+		Dial: fmt.Sprintf("%s:%d", target, targetPort),
+	}
+	rpHandler := reverseproxy.Handler{
+		Upstreams: reverseproxy.UpstreamPool{&upstream},
+	}
+	handlerRaw := caddyconfig.JSONModuleObject(rpHandler, "handler", "reverse_proxy", nil)
+	handlers = append(handlers, handlerRaw)
+
+	// Create routes
+	var routes caddyhttp.RouteList
+
+	// Handle redirects if specified
+	if options.RedirectMode != "" {
+		redirectRoute := c.createRedirectRoute(domain, options.RedirectMode)
+		if redirectRoute != nil {
+			routes = append(routes, *redirectRoute)
+		}
+	}
+
+	// Create main route
+	mainRoute := caddyhttp.Route{
+		MatcherSetsRaw: []caddy.ModuleMap{
+			{
+				"host": caddyconfig.JSON(caddyhttp.MatchHost{domain}, nil),
+			},
+		},
+		HandlersRaw: handlers,
+		Terminal:    true,
+	}
+	routes = append(routes, mainRoute)
+
+	// Remove existing routes for this domain
+	server.Routes = c.removeExistingRoutes(server.Routes, domain)
+
+	// Add new routes
+	server.Routes = append(server.Routes, routes...)
+
+	// Configure ACME TLS automation
+	var tlsApp caddytls.TLS
+	if tlsAppRaw, exists := config.AppsRaw["tls"]; exists {
+		if err := json.Unmarshal(tlsAppRaw, &tlsApp); err != nil {
+			return fmt.Errorf("failed to unmarshal TLS app: %w", err)
+		}
+	}
+
+	if tlsApp.Automation == nil {
+		tlsApp.Automation = &caddytls.AutomationConfig{}
+	}
+
+	if tlsApp.Automation.Policies == nil {
+		tlsApp.Automation.Policies = []*caddytls.AutomationPolicy{}
+	}
+
+	// Find existing ACME policy (non-on-demand)
+	var acmePolicy *caddytls.AutomationPolicy
+	for _, policy := range tlsApp.Automation.Policies {
+		if !policy.OnDemand {
+			acmePolicy = policy
+			break
+		}
+	}
+
+	if acmePolicy == nil {
+		acmePolicy = &caddytls.AutomationPolicy{
+			SubjectsRaw: []string{},
+			IssuersRaw: []json.RawMessage{
+				caddyconfig.JSONModuleObject(caddytls.ACMEIssuer{}, "module", "acme", nil),
+			},
+		}
+		tlsApp.Automation.Policies = append(tlsApp.Automation.Policies, acmePolicy)
+	}
+
+	// Add domain to ACME subjects
+	if !c.containsString(acmePolicy.SubjectsRaw, domain) {
+		acmePolicy.SubjectsRaw = append(acmePolicy.SubjectsRaw, domain)
+	}
+
+	// Update apps in config
+	httpAppRaw, err := json.Marshal(httpApp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal HTTP app: %w", err)
+	}
+	config.AppsRaw["http"] = httpAppRaw
+
+	tlsAppRaw, err := json.Marshal(tlsApp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal TLS app: %w", err)
+	}
+	config.AppsRaw["tls"] = tlsAppRaw
+
+	// Update configuration
+	_, err = c.makeRequest("POST", "/config/", config)
+	if err != nil {
+		return fmt.Errorf("failed to update config: %w", err)
+	}
+
+	return nil
+}
+
 // DeleteDomain removes a domain configuration from Caddy.
 // It removes all routes, TLS policies, and automation rules associated with the domain.
 //
