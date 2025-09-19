@@ -53,11 +53,11 @@ func (c *Client) AddDomainWithAutoTLS(domain, target string, targetPort int, opt
 		httpApp.Servers = make(map[string]*caddyhttp.Server)
 	}
 
-	if httpApp.Servers["srv0"] == nil {
-		httpApp.Servers["srv0"] = &caddyhttp.Server{}
+	if httpApp.Servers["nixopus"] == nil {
+		httpApp.Servers["nixopus"] = &caddyhttp.Server{}
 	}
 
-	server := httpApp.Servers["srv0"]
+	server := httpApp.Servers["nixopus"]
 
 	// Create route handlers
 	var handlers []json.RawMessage
@@ -235,11 +235,11 @@ func (c *Client) AddDomainWithTLS(domain, target string, targetPort int, certifi
 		httpApp.Servers = make(map[string]*caddyhttp.Server)
 	}
 
-	if httpApp.Servers["srv0"] == nil {
-		httpApp.Servers["srv0"] = &caddyhttp.Server{}
+	if httpApp.Servers["nixopus"] == nil {
+		httpApp.Servers["nixopus"] = &caddyhttp.Server{}
 	}
 
-	server := httpApp.Servers["srv0"]
+	server := httpApp.Servers["nixopus"]
 
 	// Create route handlers (similar to AddDomainWithAutoTLS)
 	var handlers []json.RawMessage
@@ -393,11 +393,11 @@ func (c *Client) AddDomainWithACME(domain, target string, targetPort int, option
 		httpApp.Servers = make(map[string]*caddyhttp.Server)
 	}
 
-	if httpApp.Servers["srv0"] == nil {
-		httpApp.Servers["srv0"] = &caddyhttp.Server{}
+	if httpApp.Servers["nixopus"] == nil {
+		httpApp.Servers["nixopus"] = &caddyhttp.Server{}
 	}
 
-	server := httpApp.Servers["srv0"]
+	server := httpApp.Servers["nixopus"]
 
 	// Create route handlers
 	var handlers []json.RawMessage
@@ -555,7 +555,7 @@ func (c *Client) DeleteDomain(domain string) error {
 			return fmt.Errorf("failed to unmarshal HTTP app: %w", err)
 		}
 
-		if server := httpApp.Servers["srv0"]; server != nil {
+		if server := httpApp.Servers["nixopus"]; server != nil {
 			server.Routes = c.removeExistingRoutes(server.Routes, domain)
 
 			// Remove TLS connection policies for this domain
