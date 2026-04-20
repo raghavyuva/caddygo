@@ -25,3 +25,21 @@ type DomainOptions struct {
 	// RedirectMode sets redirect behavior: "www_to_domain" or "domain_to_www"
 	RedirectMode string
 }
+
+// UpstreamTarget represents a single backend server.
+type UpstreamTarget struct {
+	Host string
+	Port int
+}
+
+// LoadBalancingOptions configures how traffic is distributed across upstreams.
+type LoadBalancingOptions struct {
+	// Policy is the load balancing algorithm: "round_robin", "first", "least_conn",
+	// "random", "ip_hash", "uri_hash", "header", "cookie". Empty = Caddy default (random).
+	Policy string
+	// HealthCheckPath enables active health checking on this HTTP path (e.g. "/health").
+	// Empty = no active health checks (passive health checks still apply).
+	HealthCheckPath string
+	// HealthCheckIntervalSec is seconds between health check probes. Default: 10.
+	HealthCheckIntervalSec int
+}

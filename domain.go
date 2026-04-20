@@ -3,6 +3,7 @@ package caddygo
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/caddyserver/caddy/v2"
 	"github.com/caddyserver/caddy/v2/caddyconfig"
@@ -185,6 +186,198 @@ func (c *Client) AddDomainWithAutoTLS(domain, target string, targetPort int, opt
 	}
 
 	return nil
+}
+
+// AddDomainWithUpstreams adds a domain with multiple upstream targets and optional
+// load balancing. For a single target with no LB policy, it delegates to AddDomainWithAutoTLS.
+func (c *Client) AddDomainWithUpstreams(domain string, targets []UpstreamTarget, lbOptions LoadBalancingOptions, options DomainOptions) error {
+	if len(targets) == 0 {
+		return fmt.Errorf("at least one upstream target is required")
+	}
+	if len(targets) == 1 && lbOptions.Policy == "" {
+		return c.AddDomainWithAutoTLS(domain, targets[0].Host, targets[0].Port, options)
+	}
+
+	resp, err := c.makeRequest("GET", "/config/", nil)
+	if err != nil {
+		return fmt.Errorf("failed to get current config: %w", err)
+	}
+	defer resp.Body.Close()
+
+	var config caddy.Config
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return fmt.Errorf("failed to decode config: %w", err)
+	}
+
+	if config.AppsRaw == nil {
+		config.AppsRaw = make(map[string]json.RawMessage)
+	}
+
+	var httpApp caddyhttp.App
+	if httpAppRaw, exists := config.AppsRaw["http"]; exists {
+		if err := json.Unmarshal(httpAppRaw, &httpApp); err != nil {
+			return fmt.Errorf("failed to unmarshal HTTP app: %w", err)
+		}
+	}
+
+	if httpApp.Servers == nil {
+		httpApp.Servers = make(map[string]*caddyhttp.Server)
+	}
+	if httpApp.Servers["nixopus"] == nil {
+		httpApp.Servers["nixopus"] = &caddyhttp.Server{}
+	}
+	server := httpApp.Servers["nixopus"]
+
+	var handlers []json.RawMessage
+
+	if options.EnableSecurityHeaders {
+		headersHandler := headers.Handler{
+			Response: &headers.RespHeaderOps{
+				HeaderOps: &headers.HeaderOps{
+					Set: c.getSecurityHeaders(options.EnableHSTS, options.FrameOptions),
+				},
+			},
+		}
+		handlers = append(handlers, caddyconfig.JSONModuleObject(headersHandler, "handler", "headers", nil))
+	}
+
+	if options.EnableCompression {
+		encodeHandler := encode.Encode{
+			EncodingsRaw: map[string]json.RawMessage{
+				"gzip": json.RawMessage(`{}`),
+				"zstd": json.RawMessage(`{}`),
+			},
+		}
+		handlers = append(handlers, caddyconfig.JSONModuleObject(encodeHandler, "handler", "encode", nil))
+	}
+
+	pool := make(reverseproxy.UpstreamPool, len(targets))
+	for i, t := range targets {
+		pool[i] = &reverseproxy.Upstream{
+			Dial: fmt.Sprintf("%s:%d", t.Host, t.Port),
+		}
+	}
+
+	rpHandler := reverseproxy.Handler{
+		Upstreams: pool,
+	}
+
+	if lbOptions.Policy != "" {
+		rpHandler.LoadBalancing = &reverseproxy.LoadBalancing{
+			SelectionPolicyRaw: caddyconfig.JSONModuleObject(
+				loadBalancerModule(lbOptions.Policy),
+				"policy", lbOptions.Policy, nil,
+			),
+		}
+	}
+
+	if lbOptions.HealthCheckPath != "" {
+		interval := lbOptions.HealthCheckIntervalSec
+		if interval <= 0 {
+			interval = 10
+		}
+		rpHandler.HealthChecks = &reverseproxy.HealthChecks{
+			Active: &reverseproxy.ActiveHealthChecks{
+				Path:     lbOptions.HealthCheckPath,
+				Interval: caddy.Duration(time.Duration(interval) * time.Second),
+			},
+		}
+	}
+
+	handlers = append(handlers, caddyconfig.JSONModuleObject(rpHandler, "handler", "reverse_proxy", nil))
+
+	var routes caddyhttp.RouteList
+	if options.RedirectMode != "" {
+		if redirectRoute := c.createRedirectRoute(domain, options.RedirectMode); redirectRoute != nil {
+			routes = append(routes, *redirectRoute)
+		}
+	}
+
+	mainRoute := caddyhttp.Route{
+		MatcherSetsRaw: []caddy.ModuleMap{
+			{"host": caddyconfig.JSON(caddyhttp.MatchHost{domain}, nil)},
+		},
+		HandlersRaw: handlers,
+		Terminal:    true,
+	}
+	routes = append(routes, mainRoute)
+
+	server.Routes = c.removeExistingRoutes(server.Routes, domain)
+	server.Routes = append(server.Routes, routes...)
+
+	var tlsApp caddytls.TLS
+	if tlsAppRaw, exists := config.AppsRaw["tls"]; exists {
+		if err := json.Unmarshal(tlsAppRaw, &tlsApp); err != nil {
+			return fmt.Errorf("failed to unmarshal TLS app: %w", err)
+		}
+	}
+
+	if tlsApp.Automation == nil {
+		tlsApp.Automation = &caddytls.AutomationConfig{}
+	}
+	if tlsApp.Automation.Policies == nil {
+		tlsApp.Automation.Policies = []*caddytls.AutomationPolicy{}
+	}
+
+	var onDemandPolicy *caddytls.AutomationPolicy
+	for _, policy := range tlsApp.Automation.Policies {
+		if policy.OnDemand {
+			onDemandPolicy = policy
+			break
+		}
+	}
+	if onDemandPolicy == nil {
+		onDemandPolicy = &caddytls.AutomationPolicy{
+			OnDemand:    true,
+			KeyType:     "p384",
+			SubjectsRaw: []string{},
+		}
+		tlsApp.Automation.Policies = append(tlsApp.Automation.Policies, onDemandPolicy)
+	}
+	if !c.containsString(onDemandPolicy.SubjectsRaw, domain) {
+		onDemandPolicy.SubjectsRaw = append(onDemandPolicy.SubjectsRaw, domain)
+	}
+
+	httpAppRaw, err := json.Marshal(httpApp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal HTTP app: %w", err)
+	}
+	config.AppsRaw["http"] = httpAppRaw
+
+	tlsAppRaw, err := json.Marshal(tlsApp)
+	if err != nil {
+		return fmt.Errorf("failed to marshal TLS app: %w", err)
+	}
+	config.AppsRaw["tls"] = tlsAppRaw
+
+	_, err = c.makeRequest("POST", "/config/", config)
+	if err != nil {
+		return fmt.Errorf("failed to update config: %w", err)
+	}
+	return nil
+}
+
+func loadBalancerModule(policy string) interface{} {
+	switch policy {
+	case "round_robin":
+		return reverseproxy.RoundRobinSelection{}
+	case "first":
+		return reverseproxy.FirstSelection{}
+	case "least_conn":
+		return reverseproxy.LeastConnSelection{}
+	case "random":
+		return reverseproxy.RandomSelection{}
+	case "ip_hash":
+		return reverseproxy.IPHashSelection{}
+	case "uri_hash":
+		return reverseproxy.URIHashSelection{}
+	case "header":
+		return reverseproxy.HeaderHashSelection{}
+	case "cookie":
+		return reverseproxy.CookieHashSelection{}
+	default:
+		return reverseproxy.RandomSelection{}
+	}
 }
 
 // AddDomainWithTLS adds a domain with a custom TLS certificate.
