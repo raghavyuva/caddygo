@@ -42,4 +42,17 @@ type LoadBalancingOptions struct {
 	HealthCheckPath string
 	// HealthCheckIntervalSec is seconds between health check probes. Default: 10.
 	HealthCheckIntervalSec int
+
+	// PassiveFailDurationSec is how long (seconds) to remember a backend's failures.
+	// After this window the backend is eligible again. 0 = disabled.
+	PassiveFailDurationSec int
+	// PassiveMaxFails is consecutive failures within FailDuration before marking unhealthy. 0 = disabled.
+	PassiveMaxFails int
+	// PassiveUnhealthyStatus lists HTTP status codes that count as failures (e.g. 502, 503).
+	PassiveUnhealthyStatus []int
+
+	// TryDurationSec is how long Caddy retries other upstreams when one fails. 0 = no retry.
+	TryDurationSec int
+	// TryIntervalMs is the pause (milliseconds) between retry attempts. Default: 250.
+	TryIntervalMs int
 }

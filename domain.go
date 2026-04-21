@@ -271,17 +271,45 @@ func (c *Client) AddDomainWithUpstreams(domain string, targets []UpstreamTarget,
 		}
 	}
 
-	if lbOptions.HealthCheckPath != "" {
-		interval := lbOptions.HealthCheckIntervalSec
-		if interval <= 0 {
-			interval = 10
-		}
-		rpHandler.HealthChecks = &reverseproxy.HealthChecks{
-			Active: &reverseproxy.ActiveHealthChecks{
+	if lbOptions.HealthCheckPath != "" || lbOptions.PassiveFailDurationSec > 0 || lbOptions.PassiveMaxFails > 0 {
+		rpHandler.HealthChecks = &reverseproxy.HealthChecks{}
+
+		if lbOptions.HealthCheckPath != "" {
+			interval := lbOptions.HealthCheckIntervalSec
+			if interval <= 0 {
+				interval = 10
+			}
+			rpHandler.HealthChecks.Active = &reverseproxy.ActiveHealthChecks{
 				Path:     lbOptions.HealthCheckPath,
 				Interval: caddy.Duration(time.Duration(interval) * time.Second),
-			},
+			}
 		}
+
+		if lbOptions.PassiveFailDurationSec > 0 || lbOptions.PassiveMaxFails > 0 {
+			passive := &reverseproxy.PassiveHealthChecks{}
+			if lbOptions.PassiveFailDurationSec > 0 {
+				passive.FailDuration = caddy.Duration(time.Duration(lbOptions.PassiveFailDurationSec) * time.Second)
+			}
+			if lbOptions.PassiveMaxFails > 0 {
+				passive.MaxFails = lbOptions.PassiveMaxFails
+			}
+			if len(lbOptions.PassiveUnhealthyStatus) > 0 {
+				passive.UnhealthyStatus = lbOptions.PassiveUnhealthyStatus
+			}
+			rpHandler.HealthChecks.Passive = passive
+		}
+	}
+
+	if lbOptions.TryDurationSec > 0 {
+		if rpHandler.LoadBalancing == nil {
+			rpHandler.LoadBalancing = &reverseproxy.LoadBalancing{}
+		}
+		rpHandler.LoadBalancing.TryDuration = caddy.Duration(time.Duration(lbOptions.TryDurationSec) * time.Second)
+		tryInterval := lbOptions.TryIntervalMs
+		if tryInterval <= 0 {
+			tryInterval = 250
+		}
+		rpHandler.LoadBalancing.TryInterval = caddy.Duration(time.Duration(tryInterval) * time.Millisecond)
 	}
 
 	handlers = append(handlers, caddyconfig.JSONModuleObject(rpHandler, "handler", "reverse_proxy", nil))
